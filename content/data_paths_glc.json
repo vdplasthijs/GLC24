@@ -9,7 +9,8 @@
       "home": "/Users/t.vanderplas/",
       "repo": "/Users/t.vanderplas/repos/GLC24/",
       "repo_GLC_official": "/Users/t.vanderplas/repos/GeoLifeCLEF/",
-      "data_folder": "/Users/t.vanderplas/data_offline/data_geolifeclef2024/"
+      "predictions_folder": "/Users/t.vanderplas/data_offline/data_geolifeclef2024/predictions_glc2024",
+      "data_folder": "/Users/t.vanderplas/data_offline/data_geolifeclef2024/geolifeclef-2024/"
                 }
     }
 }
