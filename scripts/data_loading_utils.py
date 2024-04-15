@@ -4,23 +4,66 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from loadpaths_glc import loadpaths
+import geopandas as gpd
+from shapely.geometry import Point
+import h3pandas
 path_dict = loadpaths()
 
-def load_metadata():
+def load_metadata(create_geo=False, add_h3=False, drop_po=False):
+    if add_h3 is not False:
+        assert type(add_h3) == int, add_h3
+        bool_add_h3 = True
+    if create_geo and drop_po is False:
+        drop_po = True
+        print('Dropped PO data because takes ages with geometry')
     df_train_pa = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_PA_metadata_train.csv'))
     df_train_po = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_P0_metadata_train.csv'))
     df_test_pa = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_PA_metadata_test.csv'))
 
-    cols_drop = ['taxonRank', 'geoUncertaintyInM', 'date', 'areaInM2']
+    cols_drop = ['taxonRank', 'geoUncertaintyInM', 'date', 'areaInM2', 'publisher',
+                 'month', 'day', 'region', 'dayOfYear', 'country']  ## drop all non informative and/or non omnipresent columns
     print(f'Columns dropped: {cols_drop}')
     for df in [df_train_pa, df_train_po, df_test_pa]:
         for c in cols_drop:
             if c in df.columns:
                 df.drop(c, axis=1, inplace=True)
+        ## rename lon to lng
+        if 'lon' in df.columns:
+            df.rename(columns={'lon': 'lng'}, inplace=True)
+        else:
+            assert 'lng' in df.columns, 'Longitude column not found'
+        if 'speciesId' in df.columns:
+            df['speciesId'] = df['speciesId'].astype(int)
+            
+    assert set(df_train_pa.columns) == set(df_train_po.columns), f'Columns differ between train PA and PO: {df_train_pa.columns} vs {df_train_po.columns}'  
+    order_cols = df_train_pa.columns
+    df_train_po = df_train_po[order_cols]
+    
+    df_train_pa_species = df_train_pa[['speciesId', 'surveyId']]
+    df_train_po_species = df_train_po[['speciesId', 'surveyId']]
+    df_train_pa = df_train_pa.drop('speciesId', axis=1)
+    df_train_po = df_train_po.drop('speciesId', axis=1)
+    df_train_pa = df_train_pa.drop_duplicates()
+    df_train_po = df_train_po.drop_duplicates()
 
     dict_dfs = {'df_train_pa': df_train_pa, 'df_train_po': df_train_po, 'df_test_pa': df_test_pa}
-    dict_dfs_train = {'df_train_pa': df_train_pa, 'df_train_po': df_train_po}
-    return dict_dfs, dict_dfs_train
+    dict_dfs_species = {'df_train_pa_species': df_train_pa_species, 'df_train_po_species': df_train_po_species}
+
+    if drop_po:
+        dict_dfs = {k: v for k, v in dict_dfs.items() if 'pa' in k}
+        dict_dfs_species = {k: v for k, v in dict_dfs_species.items() if 'pa' in k}
+    
+    if bool_add_h3:
+        for k, v in dict_dfs.items():
+            dict_dfs[k] = v.h3.geo_to_h3(resolution=add_h3)
+            dict_dfs[k] = dict_dfs[k].reset_index()
+            
+    if create_geo:
+        for k, v in dict_dfs.items():
+            v['geometry'] = [Point(xy) for xy in zip(v.lng, v.lat)]
+            dict_dfs[k] = gpd.GeoDataFrame(v, crs='EPSG:4326')
+    
+    return dict_dfs, dict_dfs_species
 
 def load_landsat_timeseries(mode='train', data_type='PA'):
     assert mode in ['train', 'test'], mode 
