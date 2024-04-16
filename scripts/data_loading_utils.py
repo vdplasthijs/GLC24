@@ -92,8 +92,22 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False,
         dict_dfs_species['df_train_pa_species'] = dict_dfs_species['df_train_pa_species'][~np.isin(dict_dfs_species['df_train_pa_species']['surveyId'], dict_dfs['df_val_pa']['surveyId'])]
         print(f'Created validation set with {len(dict_dfs["df_val_pa"])} entries')   
 
+        dict_val_species = {}
+        for row in dict_dfs_species['df_val_pa_species'].itertuples():
+            surveyId = row.surveyId
+            speciesId = row.speciesId
+            if surveyId not in dict_val_species:
+                dict_val_species[surveyId] = [speciesId]
+            else:
+                dict_val_species[surveyId].append(speciesId)
 
-    return dict_dfs, dict_dfs_species
+        for k, v in dict_val_species.items():
+            dict_val_species[k] = list(np.unique(v))
+
+    else:
+        dict_val_species = None
+
+    return dict_dfs, dict_dfs_species, dict_val_species
 
 def load_landsat_timeseries(mode='train', data_type='PA'):
     assert mode in ['train', 'test'], mode 
@@ -106,7 +120,7 @@ def load_landsat_timeseries(mode='train', data_type='PA'):
     dict_dfs = {band: pd.read_csv(path_bands[band]) for band in names_bands}
     return dict_dfs
 
-def load_multiple_env_raster(mode='train', data_type='PA',
+def load_multiple_env_raster(mode='train', data_type='PA', list_surveyIds=None,
                              list_env_types=['elevation', 'landcover', 'soilgrids', 'climate_av']):
     assert mode in ['train', 'test'], mode
     assert data_type in ['PA'], data_type
@@ -117,6 +131,10 @@ def load_multiple_env_raster(mode='train', data_type='PA',
             df_merged = df_raster
         else:
             df_merged = df_merged.merge(df_raster, on='surveyId', how='inner')
+
+    if list_surveyIds is not None:
+        df_merged = df_merged[df_merged['surveyId'].isin(list_surveyIds)]
+        
     return df_merged
 
 def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
