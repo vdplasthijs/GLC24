@@ -9,10 +9,14 @@ from shapely.geometry import Point
 import h3pandas
 path_dict = loadpaths()
 
-def load_metadata(create_geo=False, add_h3=False, drop_po=False):
+def load_metadata(create_geo=False, add_h3=False, drop_po=False,
+                  drop_duplicates=True, create_validation_set=False, 
+                  path_inds_val='../content/val_inds/inds_val_pa-20240416-1454.npy'):
     if add_h3 is not False:
         assert type(add_h3) == int, add_h3
         bool_add_h3 = True
+    else:
+        bool_add_h3 = False
     if create_geo and drop_po is False:
         drop_po = True
         print('Dropped PO data because takes ages with geometry')
@@ -53,6 +57,13 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False):
         dict_dfs = {k: v for k, v in dict_dfs.items() if 'pa' in k}
         dict_dfs_species = {k: v for k, v in dict_dfs_species.items() if 'pa' in k}
     
+    if drop_duplicates:
+        for k, v in dict_dfs_species.items():
+            n_entries = len(v)
+            dict_dfs_species[k] = v.drop_duplicates()
+            n_entries_after = len(dict_dfs_species[k])
+            print(f'Dropped {n_entries - n_entries_after}/{n_entries} duplicates in {k}')
+
     if bool_add_h3:
         for k, v in dict_dfs.items():
             dict_dfs[k] = v.h3.geo_to_h3(resolution=add_h3)
@@ -63,6 +74,25 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False):
             v['geometry'] = [Point(xy) for xy in zip(v.lng, v.lat)]
             dict_dfs[k] = gpd.GeoDataFrame(v, crs='EPSG:4326')
     
+    if create_validation_set:
+        if path_inds_val is None:
+            fraction_val_pa = 0.1
+            n_val_pa = int(fraction_val_pa * len(dict_dfs['df_train_pa']))
+            inds_val_pa = np.random.choice(dict_dfs['df_train_pa'].index, n_val_pa, replace=False)
+            timestamp = pd.Timestamp.now().strftime('%Y%m%d-%H%M')
+            np.save(os.path.join('../content/val_inds/', f'inds_val_pa-{timestamp}.npy'), inds_val_pa)
+        else:
+            assert os.path.exists(path_inds_val), f'Path does not exist: {path_inds_val}'
+            assert path_inds_val.endswith('.npy'), path_inds_val
+            inds_val_pa = np.load(path_inds_val)
+        dict_dfs['df_val_pa'] = dict_dfs['df_train_pa'].loc[inds_val_pa].sort_values('surveyId')   
+        dict_dfs['df_train_pa'] = dict_dfs['df_train_pa'].drop(inds_val_pa)
+
+        dict_dfs_species['df_val_pa_species'] = dict_dfs_species['df_train_pa_species'][np.isin(dict_dfs_species['df_train_pa_species']['surveyId'], dict_dfs['df_val_pa']['surveyId'])].sort_values('surveyId')
+        dict_dfs_species['df_train_pa_species'] = dict_dfs_species['df_train_pa_species'][~np.isin(dict_dfs_species['df_train_pa_species']['surveyId'], dict_dfs['df_val_pa']['surveyId'])]
+        print(f'Created validation set with {len(dict_dfs["df_val_pa"])} entries')   
+
+
     return dict_dfs, dict_dfs_species
 
 def load_landsat_timeseries(mode='train', data_type='PA'):

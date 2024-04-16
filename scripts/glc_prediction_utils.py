@@ -52,7 +52,8 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
 
     ## prdictions:
     dict_pred = {}
-
+    count_no_nearby = 0
+    count_no_nearby_lc = 0
     for it in tqdm(range(len(dict_dfs['df_test_pa']))):
         row = dict_dfs['df_test_pa'].iloc[it]
         point_loc = row.geometry
@@ -61,6 +62,7 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
         nearby_training_points = df_train.sindex.intersection(circle.bounds)
         if len(nearby_training_points) == 0:
             dict_pred[curr_test_survey_id] = []
+            count_no_nearby += 1
             continue 
         curr_test_lc = df_env_test['LandCover'].iloc[it]    
         df_train_nearby = df_train.iloc[nearby_training_points]
@@ -68,6 +70,7 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
         # print(len(nearby_training_points), len(df_train_nearby))
         if len(df_train_nearby) == 0:
             dict_pred[curr_test_survey_id] = []
+            count_no_nearby_lc += 1
             continue
         nearby_survey_ids = df_train_nearby['surveyId'].unique()
         assert len(nearby_survey_ids) > 0, 'No nearby survey ids found'
@@ -78,8 +81,21 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
             curr_species_pred = list(df_nearby_species['speciesId'].unique())
         elif method == 'top_25':
             curr_species_pred = df_nearby_species['speciesId'].value_counts()[:25].index.tolist()
-
+            # print(len(df_nearby_species), (df_nearby_species['speciesId'].value_counts() > 1).sum())
+        elif method == 'top_adaptive':
+            val_counts = df_nearby_species['speciesId'].value_counts()
+            val_counts = val_counts[val_counts > 1]
+            n_vals = len(val_counts)
+            if n_vals == 0:
+                curr_species_pred = df_nearby_species['speciesId'].value_counts().index.tolist()
+            else:
+                curr_species_pred = val_counts.index.tolist()
+        else:
+            raise ValueError(f'Unknown method: {method}')
         dict_pred[curr_test_survey_id] = curr_species_pred
+
+    print(f'Predictions done ({it} total). No nearby points: {count_no_nearby}, No nearby points with same LC: {count_no_nearby_lc}')
+
     if save_pred:
         convert_dict_pred_to_csv(dict_pred, save=True, custom_name=f'buffer-lc-{buffer_deg}-{method}')
 
