@@ -67,10 +67,12 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
         point_loc = row.geometry
         curr_test_survey_id = row.surveyId
         curr_test_lc = df_env_test['LandCover'].iloc[it]    
-        
+        curr_n_sp = lc_av_sp_count[lc_av_sp_count['LandCover'] == curr_test_lc]['count'].values[0]
+            
         curr_it_wh = 0 
         df_train_nearby = pd.DataFrame()
-        while curr_it_wh < max_it_while_loop and len(df_train_nearby) == 0:
+        # while curr_it_wh < max_it_while_loop and len(df_train_nearby) == 0:
+        while curr_it_wh < max_it_while_loop and len(df_train_nearby) < curr_n_sp:
             curr_buffer_deg = buffer_deg * (1 + curr_it_wh)
             circle = point_loc.buffer(curr_buffer_deg) ## buffer to degrees
             nearby_training_points = df_train.sindex.intersection(circle.bounds)
@@ -90,7 +92,6 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
         if method == 'all_nearby_species':
             curr_species_pred = list(df_nearby_species['speciesId'].unique())
         elif method == 'lc-specific':
-            curr_n_sp = lc_av_sp_count[lc_av_sp_count['LandCover'] == curr_test_lc]['count'].values[0]
             curr_species_pred = df_nearby_species['speciesId'].value_counts()[:curr_n_sp].index.tolist()
         elif 'top_' in method:
             n_top = int(method.split('_')[-1])
