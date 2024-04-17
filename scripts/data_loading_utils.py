@@ -109,6 +109,20 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False,
 
     return dict_dfs, dict_dfs_species, dict_val_species
 
+def clean_po_data(dict_dfs, dict_df_species):
+    assert 'df_train_po' in dict_dfs, 'No PO data available'
+    assert 'df_train_pa' in dict_dfs, 'No PA data available'
+    assert 'df_test_pa' in dict_dfs, 'No test data available'
+    assert 'df_train_pa_species' in dict_df_species, 'No PA species data available'
+    assert 'df_train_po_species' in dict_df_species, 'No PO species data available'
+    ## filter locations too far away from test data
+    pass 
+
+    ## filter species not present in train pa data (?)
+    pass
+
+    return dict_dfs, dict_df_species
+
 def load_landsat_timeseries(mode='train', data_type='PA'):
     assert mode in ['train', 'test'], mode 
     assert data_type in ['PA'], data_type
@@ -134,7 +148,7 @@ def load_multiple_env_raster(mode='train', data_type='PA', list_surveyIds=None,
 
     if list_surveyIds is not None:
         df_merged = df_merged[df_merged['surveyId'].isin(list_surveyIds)]
-        
+
     return df_merged
 
 def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
