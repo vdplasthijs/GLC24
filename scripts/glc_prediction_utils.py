@@ -1,4 +1,4 @@
-import os, sys
+import os, sys, json, datetime
 import numpy as np 
 import pandas as pd 
 import matplotlib.pyplot as plt
@@ -129,7 +129,7 @@ class LabelPropagation():
                  list_env_types=['elevation', 'landcover', 'climate_av'],
                  path_inds_val=None, dist_neigh_meter=10000,
                  method_weights='dist_exp_decay',
-                 preload_data=True):
+                 preload_data=True, preload_timestamp=''):
         self.val_or_test = val_or_test
         self.n_iter = n_iter
         self.list_env_types = list_env_types
@@ -137,6 +137,9 @@ class LabelPropagation():
         self.dist_neigh_meter = dist_neigh_meter
         self.method_weights = method_weights
         self.preload_data = preload_data
+        self.data_folder_sparse = os.path.join(path_dict['data_folder'], 'sparse_format')
+        self.preload_timestamp = preload_timestamp
+        self.filter_lc_exact_match = True
         self.load_data()
         self.create_graph()
 
@@ -156,11 +159,6 @@ class LabelPropagation():
             assert df_val_species is None, 'Validation species data found'
 
     def create_graph(self):
-        if self.preload_data:
-            assert False, 'not implemented'
-            return None 
-        
-        ## Create graph
         assert 'surveyId' in self.df_train.columns, 'surveyId not in df_train'
         if self.val_or_test == 'val':
             assert 'surveyId' in self.df_test.columns, 'surveyId not in df_test'
@@ -186,6 +184,31 @@ class LabelPropagation():
         self.dict_species_ind_to_val = {i: sp for i, sp in enumerate(self.species_array)}
         self.dict_surveys_val_to_ind = {surveyId: i for i, surveyId in enumerate(self.df_features_merged['surveyId'])}
 
+        if self.preload_data is False:
+            assert self.preload_timestamp is None or self.preload_timestamp == '', 'preload_timestamp not None or empty'
+            self.preload_timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+
+        path_sparse_labels = os.path.join(self.data_folder_sparse, f'mat_labels_{self.val_or_test}_{self.preload_timestamp}.npz')
+        path_sparse_weights = os.path.join(self.data_folder_sparse, f'mat_weights_{self.val_or_test}_{self.preload_timestamp}.npz')
+        path_sparse_dist = os.path.join(self.data_folder_sparse, f'mat_dist_{self.val_or_test}_{self.preload_timestamp}.npz')
+        path_sparse_edges = os.path.join(self.data_folder_sparse, f'mat_edges_{self.val_or_test}_{self.preload_timestamp}.npz')
+        path_metadata = os.path.join(self.data_folder_sparse, f'metadata_{self.val_or_test}_{self.preload_timestamp}.json')
+
+        if self.preload_data:
+            assert os.path.exists(path_sparse_labels) 
+            assert os.path.exists(path_sparse_weights) 
+            assert os.path.exists(path_sparse_dist) 
+            assert os.path.exists(path_sparse_edges)
+            
+            self.mat_labels = sp.load_npz(path_sparse_labels)
+            self.mat_weights = sp.load_npz(path_sparse_weights)
+            self.mat_dist = sp.load_npz(path_sparse_dist)
+            self.mat_edges = sp.load_npz(path_sparse_edges)
+            with open(path_metadata, 'r') as f:
+                self.dict_metadata = json.load(f)
+            print('Loaded sparse matrices from file')
+            return None
+
         ## Create sparse label matrix:
         print('Creating sparse label matrix')
         self.mat_labels = sp.lil_matrix((self.n_samples, self.n_species), dtype=np.float32)
@@ -209,9 +232,10 @@ class LabelPropagation():
             circle = point_loc.buffer(self.dist_neigh_meter)
             nearby_points = self.df_features_merged.sindex.intersection(circle.bounds)
             nearby_points = np.setdiff1d(nearby_points, row)  ## remove self
-            nearby_points_lc_match = self.df_features_merged.iloc[nearby_points]
-            nearby_points_lc_match = nearby_points_lc_match[nearby_points_lc_match['LandCover'] == current_lc]
-            nearby_points = nearby_points_lc_match.index
+            if self.filter_lc_exact_match:
+                nearby_points_lc_match = self.df_features_merged.iloc[nearby_points]
+                nearby_points_lc_match = nearby_points_lc_match[nearby_points_lc_match['LandCover'] == current_lc]
+                nearby_points = nearby_points_lc_match.index
 
             dist_to_points = self.df_features_merged.iloc[nearby_points].distance(point_loc)
             self.mat_dist[row, nearby_points] = dist_to_points
@@ -220,6 +244,28 @@ class LabelPropagation():
                 self.mat_weights[row, nearby_points] = np.exp(-dist_to_points / self.dist_neigh_meter)
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
+
+        sp.save_npz(path_sparse_labels, self.mat_labels.tocsr())
+        sp.save_npz(path_sparse_weights, self.mat_weights.tocsr())
+        sp.save_npz(path_sparse_dist, self.mat_dist.tocsr())
+        sp.save_npz(path_sparse_edges, self.mat_edges.tocsr())
+
+        self.dict_metadata = {
+            'n_samples': self.n_samples,
+            'n_species': self.n_species,
+            'n_train': self.n_train,
+            'list_env_types': self.list_env_types,
+            'dist_neigh_meter': self.dist_neigh_meter,
+            'filter_lc_exact_match': self.filter_lc_exact_match,
+            'method_weights': self.method_weights,
+            'preload_timestamp': self.preload_timestamp
+        }
+        with open(path_metadata, 'w') as f:
+            json.dump(self.dict_metadata, f)
+
+        print('Saved sparse matrices to file')
+        return None 
+
 
     def fit(self):
         ## Create sparse label matrix:
@@ -270,3 +316,15 @@ class LabelPropagation():
                                      custom_name=f'label-prop-lc-{self.dist_neigh_meter}m-{threshold_weighted_labels}')
         return self.dict_pred
         
+    def compute_f1_score_pred(self):
+        if self.df_val_species is None:
+            print('No validation data available')
+            return None
+        
+        dict_val = {}
+        for surveyId in self.df_val_species['surveyId'].unique():
+            curr_species = self.df_val_species.loc[self.df_val_species['surveyId'] == surveyId]
+            curr_species = curr_species['speciesId'].values
+            dict_val[surveyId] = curr_species
+
+        return compute_f1_score_dicts(dict_val, self.dict_pred)
