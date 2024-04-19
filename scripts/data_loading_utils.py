@@ -11,7 +11,9 @@ path_dict = loadpaths()
 
 def load_metadata(create_geo=False, add_h3=False, drop_po=False,
                   drop_duplicates=True, create_validation_set=False, 
-                  path_inds_val='../content/val_inds/inds_val_pa-20240416-1454.npy'):
+                  path_inds_val=None):
+    if path_inds_val is None:
+        path_inds_val = '../content/val_inds/inds_val_pa-20240416-1454.npy'
     if add_h3 is not False:
         assert type(add_h3) == int, add_h3
         bool_add_h3 = True
@@ -151,13 +153,6 @@ def load_multiple_env_raster(mode='train', data_type='PA', list_surveyIds=None,
     if list_surveyIds is not None:
         df_merged = df_merged[df_merged['surveyId'].isin(list_surveyIds)]
 
-    if 'elevation' in list_env_types:
-        n_nans = df_merged['Elevation'].isna().sum()
-        if n_nans > 0:
-            print(f'Warning: {n_nans} nans in elevation data')
-            inds_nan = df_merged['Elevation'].isna()
-            # for 
-
     return df_merged
 
 def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
@@ -202,32 +197,41 @@ def get_path_sat_patch_per_survey(surveyId=1986, mode='train', data_type='PA'):
     return path_rgb, path_nir
 
 def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
-                      drop_sureyId=True):
-    dict_dfs, dict_dfs_species, dict_val_species = load_metadata(create_geo=False, add_h3=False,
-                                                                 create_validation_set=True)
+                      drop_surveyId=True, val_or_test='val', path_inds_val=None,
+                      create_geo=False):
+    '''If val_or_test is "val", then the validation set is created (incl species), otherwise the test set is created (with no species).'''
+    dict_dfs, dict_dfs_species, _ = load_metadata(create_geo=create_geo, add_h3=False, path_inds_val=path_inds_val,
+                                                  create_validation_set=True if val_or_test == 'val' else False)
+    
+    ## Create train set:
     df_env_train = load_multiple_env_raster(mode='train', list_surveyIds=dict_dfs['df_train_pa']['surveyId'].unique(),
                                             list_env_types=list_env_types) 
-    df_env_val = load_multiple_env_raster(mode='train', list_surveyIds=dict_dfs['df_val_pa']['surveyId'].unique(),
-                                          list_env_types=list_env_types)
-    df_env_test = load_multiple_env_raster(mode='test', list_env_types=list_env_types)
-    
     df_train = pd.merge(dict_dfs['df_train_pa'], df_env_train, on='surveyId')
-    df_val = pd.merge(dict_dfs['df_val_pa'], df_env_val, on='surveyId')
-    df_test = pd.merge(dict_dfs['df_test_pa'], df_env_test, on='surveyId')
-
     df_train.dropna(inplace=True)
-    df_val.dropna(inplace=True)
     df_train_species = dict_dfs_species['df_train_pa_species'][dict_dfs_species['df_train_pa_species']['surveyId'].isin(df_train['surveyId'])]
-    df_val_species = dict_dfs_species['df_val_pa_species'][dict_dfs_species['df_val_pa_species']['surveyId'].isin(df_val['surveyId'])]
+
+    ## Create val or test set:
+    if val_or_test == 'val':
+        df_env_test = load_multiple_env_raster(mode='train', list_surveyIds=dict_dfs['df_val_pa']['surveyId'].unique(),
+                                            list_env_types=list_env_types)
+        df_test = pd.merge(dict_dfs['df_val_pa'], df_env_test, on='surveyId')
+        df_test.dropna(inplace=True)
+        df_val_species = dict_dfs_species['df_val_pa_species'][dict_dfs_species['df_val_pa_species']['surveyId'].isin(df_test['surveyId'])]
+    elif val_or_test == 'test':
+        df_env_test = load_multiple_env_raster(mode='test', list_env_types=list_env_types)
+        df_test = pd.merge(dict_dfs['df_test_pa'], df_env_test, on='surveyId')
+        df_val_species = None
+
+    assert df_train.isna().sum().sum() == 0, 'Nans in train data'
     assert df_test.isna().sum().sum() == 0, 'Nans in test data'
     
-    if drop_sureyId:
-        
+    if drop_surveyId:
         df_train = df_train.drop('surveyId', axis=1)
-        df_val = df_val.drop('surveyId', axis=1)
         df_test = df_test.drop('surveyId', axis=1)
 
-    assert df_train.columns.equals(df_val.columns), 'Columns differ between train and val'
+    df_train = df_train.reset_index(drop=True)
+    df_test = df_test.reset_index(drop=True)
+
     assert df_train.columns.equals(df_test.columns), 'Columns differ between train and test'
 
-    return (df_train, df_val, df_test), (df_train_species, df_val_species)
+    return (df_train, df_test), (df_train_species, df_val_species)

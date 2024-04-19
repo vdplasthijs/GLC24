@@ -6,6 +6,7 @@ from tqdm import tqdm
 import datetime 
 import geopandas as gpd
 import pandas as pd 
+import scipy.sparse as sp
 import h3pandas 
 import rtree
 import data_loading_utils as dlu
@@ -68,7 +69,7 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
         curr_test_survey_id = row.surveyId
         curr_test_lc = df_env_test['LandCover'].iloc[it]    
         curr_n_sp = lc_av_sp_count[lc_av_sp_count['LandCover'] == curr_test_lc]['count'].values[0]
-            
+        curr_n_sp = 25
         curr_it_wh = 0 
         df_train_nearby = pd.DataFrame()
         # while curr_it_wh < max_it_while_loop and len(df_train_nearby) == 0:
@@ -76,10 +77,12 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
             curr_buffer_deg = buffer_deg * (1 + curr_it_wh)
             circle = point_loc.buffer(curr_buffer_deg) ## buffer to degrees
             nearby_training_points = df_train.sindex.intersection(circle.bounds)
+            # return nearby_training_points, df_train, point_loc
             df_train_nearby = df_train.iloc[nearby_training_points]
             if len(df_train_nearby) > 0:
                 df_train_nearby = df_train_nearby[df_train_nearby['LandCover'] == curr_test_lc]
             curr_it_wh += 1
+            # return df_train_nearby
         if len(df_train_nearby) == 0:
             print(f'No nearby points for surveyId: {curr_test_survey_id} (LC: {curr_test_lc})')
             dict_pred[curr_test_survey_id] = []
@@ -120,3 +123,150 @@ def compute_f1_score_dicts(dict_val, dict_pred):
         score = n_tp / ( n_tp + 0.5 * (n_fp + n_fn))
         list_scores.append(score)
     return np.mean(list_scores)
+
+class LabelPropagation():
+    def __init__(self, val_or_test='val', n_iter=10, 
+                 list_env_types=['elevation', 'landcover', 'climate_av'],
+                 path_inds_val=None, dist_neigh_meter=10000,
+                 method_weights='dist_exp_decay',
+                 preload_data=True):
+        self.val_or_test = val_or_test
+        self.n_iter = n_iter
+        self.list_env_types = list_env_types
+        self.path_inds_val = path_inds_val
+        self.dist_neigh_meter = dist_neigh_meter
+        self.method_weights = method_weights
+        self.preload_data = preload_data
+        self.load_data()
+        self.create_graph()
+
+    def load_data(self):
+        (df_train, df_test), (df_train_species, df_val_species) = dlu.create_full_pa_ds(
+            list_env_types=self.list_env_types, val_or_test=self.val_or_test, 
+            path_inds_val=self.path_inds_val, drop_surveyId=False,
+            create_geo=True
+        )
+        self.df_train = df_train
+        self.df_train_species = df_train_species
+        self.df_test = df_test
+        self.df_val_species = df_val_species
+        if self.val_or_test == 'val':
+            assert len(df_val_species) > 0, 'No validation species data'
+        elif self.val_or_test == 'test':
+            assert df_val_species is None, 'Validation species data found'
+
+    def create_graph(self):
+        if self.preload_data:
+            assert False, 'not implemented'
+            return None 
+        
+        ## Create graph
+        assert 'surveyId' in self.df_train.columns, 'surveyId not in df_train'
+        if self.val_or_test == 'val':
+            assert 'surveyId' in self.df_test.columns, 'surveyId not in df_test'
+
+        ## change to crs 3857 for distance calculations
+        self.df_train = self.df_train.to_crs(3857)
+        self.df_test = self.df_test.to_crs(3857)
+        assert self.df_train.columns.equals(self.df_test.columns)
+        self.df_features_merged = pd.concat([self.df_train, self.df_test])
+        self.df_features_merged = self.df_features_merged.reset_index(drop=True)
+        self.n_train = len(self.df_train)
+        assert self.df_features_merged.iloc[:self.n_train].equals(self.df_train), 'Mismatch in df_train'
+        # assert self.df_features_merged.iloc[self.n_train:].equals(self.df_test), 'Mismatch in df_test'
+        # assert self.df_features_merged.iloc[self.n_train:].equals(self.df_test), 'Mismatch in df_test'
+        self.n_samples = len(self.df_features_merged)
+        if self.val_or_test == 'val':
+            self.df_species_merged = pd.concat([self.df_train_species, self.df_val_species])
+        else:
+            self.df_species_merged = self.df_train_species
+        self.n_species = self.df_species_merged['speciesId'].nunique()
+        self.species_array = self.df_species_merged['speciesId'].unique()
+        self.dict_species_val_to_ind = {sp: i for i, sp in enumerate(self.species_array)}
+        self.dict_species_ind_to_val = {i: sp for i, sp in enumerate(self.species_array)}
+        self.dict_surveys_val_to_ind = {surveyId: i for i, surveyId in enumerate(self.df_features_merged['surveyId'])}
+
+        ## Create sparse label matrix:
+        print('Creating sparse label matrix')
+        self.mat_labels = sp.lil_matrix((self.n_samples, self.n_species), dtype=np.float32)
+        for row, surveyId in tqdm(enumerate(self.df_train['surveyId'])):
+            assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
+            curr_species = self.df_train_species.loc[self.df_train_species['surveyId'] == surveyId]
+            curr_species = curr_species['speciesId'].map(self.dict_species_val_to_ind).values
+            self.mat_labels[row, curr_species] = 1
+
+        assert row == self.n_train - 1, 'Row mismatch'
+
+        ## Create sparse weight matrix:
+        print('Creating sparse weight matrix')
+        self.mat_weights = sp.lil_matrix((self.n_samples, self.n_samples), dtype=np.float32)
+        self.mat_dist = sp.lil_matrix((self.n_samples, self.n_samples), dtype=np.float32)
+        self.mat_edges = sp.lil_matrix((self.n_samples, self.n_samples), dtype=bool)
+        for row, surveyId in tqdm(enumerate(self.df_features_merged['surveyId'])):
+            assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
+            point_loc = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId].geometry.values[0]
+            current_lc = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId].LandCover.values[0]
+            circle = point_loc.buffer(self.dist_neigh_meter)
+            nearby_points = self.df_features_merged.sindex.intersection(circle.bounds)
+            nearby_points = np.setdiff1d(nearby_points, row)  ## remove self
+            nearby_points_lc_match = self.df_features_merged.iloc[nearby_points]
+            nearby_points_lc_match = nearby_points_lc_match[nearby_points_lc_match['LandCover'] == current_lc]
+            nearby_points = nearby_points_lc_match.index
+
+            dist_to_points = self.df_features_merged.iloc[nearby_points].distance(point_loc)
+            self.mat_dist[row, nearby_points] = dist_to_points
+            self.mat_edges[row, nearby_points] = 1
+            if self.method_weights == 'dist_exp_decay':
+                self.mat_weights[row, nearby_points] = np.exp(-dist_to_points / self.dist_neigh_meter)
+            else:
+                raise ValueError(f'Unknown method_weights: {self.method_weights}')
+
+    def fit(self):
+        ## Create sparse label matrix:
+        array_diffs = []
+        diff_threshold = 1
+
+        self.mat_labels_fit = self.mat_labels.copy()
+        sum_weights = self.mat_weights.sum(axis=1)[self.n_train:]
+        for it in range(self.n_iter):
+            mat_labels_new_test = self.mat_weights[self.n_train:, :] @ self.mat_labels_fit
+            mat_labels_new_test = mat_labels_new_test / sum_weights
+            diff = mat_labels_new_test - self.mat_labels_fit[self.n_train:, :]
+            diff_nz = diff[diff.nonzero()]
+            array_diffs.append(abs(diff_nz).sum())
+            self.mat_labels_fit[self.n_train:, :] = mat_labels_new_test
+            print(f'Iteration {it + 1}/{self.n_iter}. Diff: {array_diffs[-1]}')
+            if array_diffs[-1] < diff_threshold:
+                break
+
+        print(f'Converged after {it + 1}/{self.n_iter} iterations')
+
+        return array_diffs
+    
+    def create_predictions(self, threshold_weighted_labels=0.1, save_pred=True):
+        self.dict_pred = {}
+        assert hasattr(self, 'mat_labels_fit'), 'mat_labels_fit not found'
+        count_no_species = 0
+        for surveyId in tqdm(self.df_test['surveyId']):
+            row = self.dict_surveys_val_to_ind[surveyId]
+            curr_labels = self.mat_labels_fit[row, :]
+            if curr_labels.sum() == 0:
+                self.dict_pred[surveyId] = []
+                count_no_species += 1
+                continue
+            inds_nz = curr_labels.nonzero()[1]
+            vals_nz = np.array([self.dict_species_ind_to_val[i] for i in inds_nz])
+            weighted_labels = curr_labels[curr_labels.nonzero()].toarray().flatten()
+            weighted_labels_thresholded = weighted_labels > threshold_weighted_labels
+            if weighted_labels_thresholded.sum() == 0:
+                self.dict_pred[surveyId] = []
+                count_no_species += 1
+                continue
+            self.dict_pred[surveyId] = list(vals_nz[np.where(weighted_labels_thresholded)[0]])
+
+        print(f'Predictions done. No species found: {count_no_species}/{len(self.df_test)}.')
+        if save_pred and self.val_or_test == 'test':
+            convert_dict_pred_to_csv(self.dict_pred, save=True, 
+                                     custom_name=f'label-prop-lc-{self.dist_neigh_meter}m-{threshold_weighted_labels}')
+        return self.dict_pred
+        
