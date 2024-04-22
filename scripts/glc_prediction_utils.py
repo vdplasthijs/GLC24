@@ -288,11 +288,34 @@ class LabelPropagation():
         print(f'Converged after {it + 1}/{self.n_iter} iterations')
 
         return array_diffs
-    
-    def create_predictions(self, threshold_weighted_labels=0.1, save_pred=True):
+
+    def create_predictions(self, threshold_method='fixed', threshold_weighted_labels=0.1, save_pred=True):
+        assert threshold_method in ['adaptive', 'fixed'], f'Unknown threshold_method: {threshold_method}'
         self.dict_pred = {}
         assert hasattr(self, 'mat_labels_fit'), 'mat_labels_fit not found'
         count_no_species = 0
+
+        if threshold_method == 'adaptive':
+            n_test = len(self.df_test)
+            assert self.n_train + n_test == self.mat_labels_fit.shape[0], 'Mismatch in mat_labels_fit'
+            size_pos_labels_train = np.squeeze(np.array(sp.csc_matrix(self.mat_labels_fit[:self.n_train, :]).sum(axis=0)))
+            size_pos_labels_target = size_pos_labels_train * (n_test / self.n_train)
+            assert self.n_species == len(size_pos_labels_train), 'Mismatch in size_pos_labels_train'
+            thresholds_test = np.zeros(self.n_species)
+            mat_pred_csc = sp.csc_matrix(self.mat_labels_fit[self.n_train:, :])  # for efficient column slicing
+            for species_ind in range(self.n_species):
+                curr_labels = mat_pred_csc[:, species_ind]
+                sorted_preds = np.sort(curr_labels.toarray().flatten())
+                curr_target_size = size_pos_labels_target[species_ind]
+                assert curr_target_size > 0 and curr_target_size < self.n_species, f'size_pos_labels_target is 0: {curr_target_size}'
+                thresholds_test[species_ind] = sorted_preds[-int(curr_target_size)]
+
+            print(f'Computed thresholds for test set')
+        elif threshold_method == 'fixed':
+            thresholds_test = threshold_weighted_labels
+        else:
+            raise ValueError(f'Unknown threshold_method: {threshold_method}')
+        
         for surveyId in tqdm(self.df_test['surveyId']):
             row = self.dict_surveys_val_to_ind[surveyId]
             curr_labels = self.mat_labels_fit[row, :]
@@ -300,16 +323,14 @@ class LabelPropagation():
                 self.dict_pred[surveyId] = []
                 count_no_species += 1
                 continue
-            inds_nz = curr_labels.nonzero()[1]
-            vals_nz = np.array([self.dict_species_ind_to_val[i] for i in inds_nz])
-            weighted_labels = curr_labels[curr_labels.nonzero()].toarray().flatten()
-            weighted_labels_thresholded = weighted_labels > threshold_weighted_labels
+
+            weighted_labels_thresholded = curr_labels > thresholds_test
             if weighted_labels_thresholded.sum() == 0:
                 self.dict_pred[surveyId] = []
                 count_no_species += 1
                 continue
-            self.dict_pred[surveyId] = list(vals_nz[np.where(weighted_labels_thresholded)[0]])
-
+            self.dict_pred[surveyId] = [self.dict_species_ind_to_val[i] for i in weighted_labels_thresholded.nonzero()[1]]
+        
         print(f'Predictions done. No species found: {count_no_species}/{len(self.df_test)}.')
         if save_pred and self.val_or_test == 'test':
             convert_dict_pred_to_csv(self.dict_pred, save=True, 
