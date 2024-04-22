@@ -294,6 +294,7 @@ class LabelPropagation():
         self.dict_pred = {}
         assert hasattr(self, 'mat_labels_fit'), 'mat_labels_fit not found'
         count_no_species = 0
+        self.mat_labels_thresholded = self.mat_labels_fit.copy()
 
         if threshold_method == 'adaptive':
             n_test = len(self.df_test)
@@ -308,14 +309,19 @@ class LabelPropagation():
                 sorted_preds = np.sort(curr_labels.toarray().flatten())
                 curr_target_size = size_pos_labels_target[species_ind]
                 assert curr_target_size > 0 and curr_target_size < self.n_species, f'size_pos_labels_target is 0: {curr_target_size}'
-                thresholds_test[species_ind] = sorted_preds[-int(curr_target_size)]
+                thresholds_test[species_ind] = sorted_preds[-int(np.ceil(curr_target_size))]  ## ceil first to prevent rounding to 0 for target sizes < 1. 
+                if thresholds_test[species_ind] == 0:  ## this shouldn't matter, because th==0 only if all preds are 0, but just in case to prevent future blow ups.
+                    thresholds_test[species_ind] = 0.01
+                # else:
+                #     thresholds_test[species_ind] = np.minimum(thresholds_test[species_ind], threshold_weighted_labels)
 
             print(f'Computed thresholds for test set')
         elif threshold_method == 'fixed':
             thresholds_test = threshold_weighted_labels
         else:
             raise ValueError(f'Unknown threshold_method: {threshold_method}')
-        
+        self.thresholds_test = thresholds_test
+
         for surveyId in tqdm(self.df_test['surveyId']):
             row = self.dict_surveys_val_to_ind[surveyId]
             curr_labels = self.mat_labels_fit[row, :]
@@ -325,6 +331,7 @@ class LabelPropagation():
                 continue
 
             weighted_labels_thresholded = curr_labels > thresholds_test
+            self.mat_labels_thresholded[row, :] = weighted_labels_thresholded
             if weighted_labels_thresholded.sum() == 0:
                 self.dict_pred[surveyId] = []
                 count_no_species += 1
