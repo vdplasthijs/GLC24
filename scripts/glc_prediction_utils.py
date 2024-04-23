@@ -1,4 +1,4 @@
-import os, sys, json, datetime
+import os, sys, json, datetime, copy
 import numpy as np 
 import pandas as pd 
 import matplotlib.pyplot as plt
@@ -7,8 +7,9 @@ import datetime
 import geopandas as gpd
 import pandas as pd 
 import scipy.sparse as sp
-import h3pandas 
-import rtree
+# import h3pandas 
+# import rtree
+import sklearn.feature_selection
 import data_loading_utils as dlu
 from loadpaths_glc import loadpaths
 path_dict = loadpaths()
@@ -125,21 +126,25 @@ def compute_f1_score_dicts(dict_val, dict_pred):
     return np.mean(list_scores)
 
 class LabelPropagation():
-    def __init__(self, val_or_test='val', n_iter=10, 
+    def __init__(self, val_or_test='val', n_iter=40, 
                  list_env_types=['elevation', 'landcover', 'climate_av'],
                  path_inds_val=None, dist_neigh_meter=10000,
                  method_weights='dist_exp_decay',
-                 preload_data=True, preload_timestamp=''):
+                 filter_lc_exact_match=True,
+                 preload_labels=True, preload_weights=False, 
+                 labels_preload_timestamp='', weights_preload_timestamp=''):
         self.val_or_test = val_or_test
         self.n_iter = n_iter
         self.list_env_types = list_env_types
         self.path_inds_val = path_inds_val
         self.dist_neigh_meter = dist_neigh_meter
         self.method_weights = method_weights
-        self.preload_data = preload_data
+        self.preload_labels = preload_labels
+        self.preload_weights = preload_weights
         self.data_folder_sparse = os.path.join(path_dict['data_folder'], 'sparse_format')
-        self.preload_timestamp = preload_timestamp
-        self.filter_lc_exact_match = True
+        self.labels_preload_timestamp = labels_preload_timestamp
+        self.weights_preload_timestamp = weights_preload_timestamp
+        self.filter_lc_exact_match = filter_lc_exact_match
         self.load_data()
         self.create_graph()
 
@@ -162,7 +167,11 @@ class LabelPropagation():
         assert 'surveyId' in self.df_train.columns, 'surveyId not in df_train'
         if self.val_or_test == 'val':
             assert 'surveyId' in self.df_test.columns, 'surveyId not in df_test'
-
+        if self.preload_weights:
+            assert self.preload_labels, 'preload_labels is False'
+            assert self.labels_preload_timestamp is not None and self.labels_preload_timestamp != '', 'labels_preload_timestamp not set'
+        if self.preload_labels:
+            assert self.labels_preload_timestamp is not None and self.labels_preload_timestamp != '', 'labels_preload_timestamp not set'
         ## change to crs 3857 for distance calculations
         self.df_train = self.df_train.to_crs(3857)
         self.df_test = self.df_test.to_crs(3857)
@@ -184,23 +193,42 @@ class LabelPropagation():
         self.dict_species_ind_to_val = {i: sp for i, sp in enumerate(self.species_array)}
         self.dict_surveys_val_to_ind = {surveyId: i for i, surveyId in enumerate(self.df_features_merged['surveyId'])}
 
-        if self.preload_data is False:
-            assert self.preload_timestamp is None or self.preload_timestamp == '', 'preload_timestamp not None or empty'
-            self.preload_timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+        if self.preload_labels is False:
+            if not (self.labels_preload_timestamp is None or self.preload_labels == ''):
+                print('WARNING: preload_data is False. Timestamp will be overwritten.')
+            self.labels_preload_timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+            self.weights_preload_timestamp = copy.deepcopy(self.labels_preload_timestamp)
+        
+        if self.preload_weights is False:
+            if not (self.weights_preload_timestamp is None or self.weights_preload_timestamp == ''):
+                print('WARNING: preload_data is False. Timestamp will be overwritten.')
+            self.weights_preload_timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
 
-        path_sparse_labels = os.path.join(self.data_folder_sparse, f'mat_labels_{self.val_or_test}_{self.preload_timestamp}.npz')
-        path_sparse_weights = os.path.join(self.data_folder_sparse, f'mat_weights_{self.val_or_test}_{self.preload_timestamp}.npz')
-        path_sparse_dist = os.path.join(self.data_folder_sparse, f'mat_dist_{self.val_or_test}_{self.preload_timestamp}.npz')
-        path_sparse_edges = os.path.join(self.data_folder_sparse, f'mat_edges_{self.val_or_test}_{self.preload_timestamp}.npz')
-        path_metadata = os.path.join(self.data_folder_sparse, f'metadata_{self.val_or_test}_{self.preload_timestamp}.json')
+        path_sparse_labels = os.path.join(self.data_folder_sparse, f'mat_labels_{self.val_or_test}_{self.labels_preload_timestamp}.npz')
+        path_sparse_weights = os.path.join(self.data_folder_sparse, f'mat_weights_{self.val_or_test}_{self.weights_preload_timestamp}.npz')
+        path_sparse_dist = os.path.join(self.data_folder_sparse, f'mat_dist_{self.val_or_test}_{self.weights_preload_timestamp}.npz')
+        path_sparse_edges = os.path.join(self.data_folder_sparse, f'mat_edges_{self.val_or_test}_{self.weights_preload_timestamp}.npz')
+        path_metadata = os.path.join(self.data_folder_sparse, f'metadata_{self.val_or_test}_{self.weights_preload_timestamp}.json')
 
-        if self.preload_data:
-            assert os.path.exists(path_sparse_labels) 
-            assert os.path.exists(path_sparse_weights) 
-            assert os.path.exists(path_sparse_dist) 
-            assert os.path.exists(path_sparse_edges)
-            
+        if self.preload_labels:
+            assert os.path.exists(path_sparse_labels), f'File not found: {path_sparse_labels}'
             self.mat_labels = sp.load_npz(path_sparse_labels)
+        else:
+            ## Create sparse label matrix:
+            print(f'Creating sparse label matrix ({len(self.df_train)} iterations)')
+            self.mat_labels = sp.lil_matrix((self.n_samples, self.n_species), dtype=np.float32)
+            for row, surveyId in tqdm(enumerate(self.df_train['surveyId'])):
+                assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
+                curr_species = self.df_train_species.loc[self.df_train_species['surveyId'] == surveyId]
+                curr_species = curr_species['speciesId'].map(self.dict_species_val_to_ind).values
+                self.mat_labels[row, curr_species] = 1
+            assert row == self.n_train - 1, 'Row mismatch'
+
+        if self.preload_weights:
+            assert os.path.exists(path_sparse_weights), f'File not found: {path_sparse_weights}' 
+            assert os.path.exists(path_sparse_dist), f'File not found: {path_sparse_dist}' 
+            assert os.path.exists(path_sparse_edges), f'File not found: {path_sparse_edges}'
+            
             self.mat_weights = sp.load_npz(path_sparse_weights)
             self.mat_dist = sp.load_npz(path_sparse_dist)
             self.mat_edges = sp.load_npz(path_sparse_edges)
@@ -209,26 +237,16 @@ class LabelPropagation():
             print('Loaded sparse matrices from file')
             return None
 
-        ## Create sparse label matrix:
-        print('Creating sparse label matrix')
-        self.mat_labels = sp.lil_matrix((self.n_samples, self.n_species), dtype=np.float32)
-        for row, surveyId in tqdm(enumerate(self.df_train['surveyId'])):
-            assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
-            curr_species = self.df_train_species.loc[self.df_train_species['surveyId'] == surveyId]
-            curr_species = curr_species['speciesId'].map(self.dict_species_val_to_ind).values
-            self.mat_labels[row, curr_species] = 1
-
-        assert row == self.n_train - 1, 'Row mismatch'
-
         ## Create sparse weight matrix:
-        print('Creating sparse weight matrix')
+        print(f'Creating sparse weight matrix ({len(self.df_features_merged)} iterations)')
         self.mat_weights = sp.lil_matrix((self.n_samples, self.n_samples), dtype=np.float32)
         self.mat_dist = sp.lil_matrix((self.n_samples, self.n_samples), dtype=np.float32)
         self.mat_edges = sp.lil_matrix((self.n_samples, self.n_samples), dtype=bool)
         for row, surveyId in tqdm(enumerate(self.df_features_merged['surveyId'])):
             assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
-            point_loc = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId].geometry.values[0]
-            current_lc = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId].LandCover.values[0]
+            curr_sample = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId]
+            point_loc = curr_sample.geometry.values[0]
+            current_lc = curr_sample.LandCover.values[0]
             circle = point_loc.buffer(self.dist_neigh_meter)
             nearby_points = self.df_features_merged.sindex.intersection(circle.bounds)
             nearby_points = np.setdiff1d(nearby_points, row)  ## remove self
@@ -242,6 +260,13 @@ class LabelPropagation():
             self.mat_edges[row, nearby_points] = 1
             if self.method_weights == 'dist_exp_decay':
                 self.mat_weights[row, nearby_points] = np.exp(-dist_to_points / self.dist_neigh_meter)
+            elif self.method_weights == 'feature_dist':
+                list_features = ['lat', 'lng', 'Bio12', 'Bio9', 'Bio10', 'Bio4', 'Bio14']
+                curr_features = curr_sample[list_features].values
+                nearby_features = self.df_features_merged.iloc[nearby_points][list_features].values
+                dist_features = np.linalg.norm(curr_features - nearby_features, axis=1, ord=1)
+                self.mat_weights[row, nearby_points] = np.exp(-dist_features / self.dist_neigh_meter)
+                # assert False
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
 
@@ -258,7 +283,10 @@ class LabelPropagation():
             'dist_neigh_meter': self.dist_neigh_meter,
             'filter_lc_exact_match': self.filter_lc_exact_match,
             'method_weights': self.method_weights,
-            'preload_timestamp': self.preload_timestamp
+            'preload_labels': self.preload_labels,
+            'preload_weights': self.preload_weights,
+            'labels_preload_timestamp': self.labels_preload_timestamp,
+            'weights_preload_timestamp': self.weights_preload_timestamp,
         }
         with open(path_metadata, 'w') as f:
             json.dump(self.dict_metadata, f)
@@ -268,23 +296,27 @@ class LabelPropagation():
 
 
     def fit(self):
-        ## Create sparse label matrix:
+        ## Create sparse label matrix:
         array_diffs = []
         diff_threshold = 1
 
         self.mat_labels_fit = self.mat_labels.copy()
         sum_weights = self.mat_weights.sum(axis=1)[self.n_train:]
-        for it in range(self.n_iter):
+        pbar = tqdm(range(self.n_iter))  # Initialize tqdm progress bar
+        for it in pbar:
             mat_labels_new_test = self.mat_weights[self.n_train:, :] @ self.mat_labels_fit
             mat_labels_new_test = mat_labels_new_test / sum_weights
             diff = mat_labels_new_test - self.mat_labels_fit[self.n_train:, :]
             diff_nz = diff[diff.nonzero()]
             array_diffs.append(abs(diff_nz).sum())
             self.mat_labels_fit[self.n_train:, :] = mat_labels_new_test
-            print(f'Iteration {it + 1}/{self.n_iter}. Diff: {array_diffs[-1]}')
-            if array_diffs[-1] < diff_threshold:
+            pbar.set_description(f'Difference between epochs: {array_diffs[-1]:.1f}')  # Update tqdm progress bar
+
+            # Check convergence
+            if len(array_diffs) >=1 and array_diffs[-1] < diff_threshold:
                 break
 
+        pbar.close()  # Close tqdm progress bar
         print(f'Converged after {it + 1}/{self.n_iter} iterations')
 
         return array_diffs
@@ -342,7 +374,7 @@ class LabelPropagation():
         if save_pred and self.val_or_test == 'test':
             convert_dict_pred_to_csv(self.dict_pred, save=True, 
                                      custom_name=f'label-prop-lc-{self.dist_neigh_meter}m-{threshold_weighted_labels}')
-        return self.dict_pred
+        return self.dict_pred, count_no_species
         
     def compute_f1_score_pred(self):
         if self.df_val_species is None:
