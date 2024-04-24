@@ -130,8 +130,9 @@ class LabelPropagation():
                  list_env_types=['elevation', 'landcover', 'climate_av'],
                  path_inds_val=None, dist_neigh_meter=10000,
                  method_weights='dist_exp_decay',
-                 filter_lc_exact_match=True,
+                 filter_lc_exact_match=True, zscore_features=False,
                  preload_labels=True, preload_weights=False, 
+                 save_labels=True, save_weights=False,
                  labels_preload_timestamp='', weights_preload_timestamp=''):
         self.val_or_test = val_or_test
         self.n_iter = n_iter
@@ -141,10 +142,13 @@ class LabelPropagation():
         self.method_weights = method_weights
         self.preload_labels = preload_labels
         self.preload_weights = preload_weights
+        self.save_labels = save_labels
+        self.save_weights = save_weights
         self.data_folder_sparse = os.path.join(path_dict['data_folder'], 'sparse_format')
         self.labels_preload_timestamp = labels_preload_timestamp
         self.weights_preload_timestamp = weights_preload_timestamp
         self.filter_lc_exact_match = filter_lc_exact_match
+        self.zscore_features = zscore_features
         self.load_data()
         self.create_graph()
 
@@ -178,9 +182,17 @@ class LabelPropagation():
         assert self.df_train.columns.equals(self.df_test.columns)
         self.df_features_merged = pd.concat([self.df_train, self.df_test])
         self.df_features_merged = self.df_features_merged.reset_index(drop=True)
+        if self.zscore_features:
+            n_cols_zscored = 0
+            # print('Z-scoring features')
+            for c in self.df_features_merged.columns:
+                if c[:3] == 'Bio':
+                    self.df_features_merged[c] = (self.df_features_merged[c] - self.df_features_merged[c].mean()) / self.df_features_merged[c].std()
+                    n_cols_zscored += 1
+            print(f'Z-scored {n_cols_zscored} columns')
+        
         self.n_train = len(self.df_train)
-        assert self.df_features_merged.iloc[:self.n_train].equals(self.df_train), 'Mismatch in df_train'
-        # assert self.df_features_merged.iloc[self.n_train:].equals(self.df_test), 'Mismatch in df_test'
+        # assert self.df_features_merged.iloc[:self.n_train].equals(self.df_train), 'Mismatch in df_train'
         # assert self.df_features_merged.iloc[self.n_train:].equals(self.df_test), 'Mismatch in df_test'
         self.n_samples = len(self.df_features_merged)
         if self.val_or_test == 'val':
@@ -223,6 +235,11 @@ class LabelPropagation():
                 curr_species = curr_species['speciesId'].map(self.dict_species_val_to_ind).values
                 self.mat_labels[row, curr_species] = 1
             assert row == self.n_train - 1, 'Row mismatch'
+            if self.save_labels:
+                sp.save_npz(path_sparse_labels, self.mat_labels.tocsr())
+                print('Saved labels to file')
+            else:
+                print('Labels not saved to file')
 
         if self.preload_weights:
             assert os.path.exists(path_sparse_weights), f'File not found: {path_sparse_weights}' 
@@ -261,19 +278,15 @@ class LabelPropagation():
             if self.method_weights == 'dist_exp_decay':
                 self.mat_weights[row, nearby_points] = np.exp(-dist_to_points / self.dist_neigh_meter)
             elif self.method_weights == 'feature_dist':
-                list_features = ['lat', 'lng', 'Bio12', 'Bio9', 'Bio10', 'Bio4', 'Bio14']
+                # list_features = ['Bio12', 'Bio9', 'Bio10', 'Bio4', 'Bio14']
+                list_features = [c for c in self.df_features_merged.columns if c[:3] == 'Bio']
                 curr_features = curr_sample[list_features].values
                 nearby_features = self.df_features_merged.iloc[nearby_points][list_features].values
                 dist_features = np.linalg.norm(curr_features - nearby_features, axis=1, ord=1)
-                self.mat_weights[row, nearby_points] = np.exp(-dist_features / self.dist_neigh_meter)
+                self.mat_weights[row, nearby_points] = dist_features * np.exp(-dist_to_points / self.dist_neigh_meter)
                 # assert False
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
-
-        sp.save_npz(path_sparse_labels, self.mat_labels.tocsr())
-        sp.save_npz(path_sparse_weights, self.mat_weights.tocsr())
-        sp.save_npz(path_sparse_dist, self.mat_dist.tocsr())
-        sp.save_npz(path_sparse_edges, self.mat_edges.tocsr())
 
         self.dict_metadata = {
             'n_samples': self.n_samples,
@@ -285,15 +298,23 @@ class LabelPropagation():
             'method_weights': self.method_weights,
             'preload_labels': self.preload_labels,
             'preload_weights': self.preload_weights,
+            'save_labels': self.save_labels,
+            'save_weights': self.save_weights,
             'labels_preload_timestamp': self.labels_preload_timestamp,
             'weights_preload_timestamp': self.weights_preload_timestamp,
         }
-        with open(path_metadata, 'w') as f:
-            json.dump(self.dict_metadata, f)
+        if self.save_weights:
+            sp.save_npz(path_sparse_weights, self.mat_weights.tocsr())
+            sp.save_npz(path_sparse_dist, self.mat_dist.tocsr())
+            sp.save_npz(path_sparse_edges, self.mat_edges.tocsr())
+            print('Saved weights to file')
+            with open(path_metadata, 'w') as f:
+                json.dump(self.dict_metadata, f)
+            print('Saved metadata to file')
+        else:
+            print('Weights & metdata not saved to file')
 
-        print('Saved sparse matrices to file')
         return None 
-
 
     def fit(self):
         ## Create sparse label matrix:
