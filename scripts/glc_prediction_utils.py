@@ -10,6 +10,7 @@ import scipy.sparse as sp
 # import h3pandas 
 # import rtree
 import sklearn.feature_selection
+from sklearn.metrics.pairwise import cosine_similarity
 import data_loading_utils as dlu
 from loadpaths_glc import loadpaths
 path_dict = loadpaths()
@@ -30,7 +31,7 @@ def convert_dict_pred_to_csv(dict_pred, save=True, custom_name=''):
     df['predictions'] = df['predictions'].apply(lambda x: ' '.join(map(str, x)).lstrip('[ ').rstrip(' ]').replace("\n", ""))
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')
-    path_save = os.path.join(path_dict['predictions_folder'], f'GLC24_vdplasthijs_predictions-{custom_name}_{timestamp}.csv')
+    path_save = os.path.join(path_dict['predictions_folder'], f'{timestamp}_GLC24_vdplasthijs_predictions-{custom_name}.csv')
     if save:
         df.to_csv(path_save, index=False)
         print(f'Saved predictions to: {path_save}')
@@ -128,7 +129,7 @@ def compute_f1_score_dicts(dict_val, dict_pred):
 class LabelPropagation():
     def __init__(self, val_or_test='val', n_iter=40, 
                  list_env_types=['elevation', 'landcover', 'climate_av'],
-                 path_inds_val=None, dist_neigh_meter=10000,
+                 path_inds_val=None, dist_neigh_meter=30000,
                  method_weights='dist_exp_decay',
                  filter_lc_exact_match=True, zscore_features=False,
                  preload_labels=True, preload_weights=False, 
@@ -215,6 +216,9 @@ class LabelPropagation():
             if not (self.weights_preload_timestamp is None or self.weights_preload_timestamp == ''):
                 print('WARNING: preload_data is False. Timestamp will be overwritten.')
             self.weights_preload_timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M')
+        else:
+            assert self.weights_preload_timestamp is not None and self.weights_preload_timestamp != '', 'weights_preload_timestamp not set'
+            print(f'Preloading weights from timestamp: {self.weights_preload_timestamp}')
 
         path_sparse_labels = os.path.join(self.data_folder_sparse, f'mat_labels_{self.val_or_test}_{self.labels_preload_timestamp}.npz')
         path_sparse_weights = os.path.join(self.data_folder_sparse, f'mat_weights_{self.val_or_test}_{self.weights_preload_timestamp}.npz')
@@ -283,7 +287,7 @@ class LabelPropagation():
                 curr_features = curr_sample[list_features].values
                 nearby_features = self.df_features_merged.iloc[nearby_points][list_features].values
                 dist_features = np.linalg.norm(curr_features - nearby_features, axis=1, ord=1)
-                self.mat_weights[row, nearby_points] = dist_features * np.exp(-dist_to_points / self.dist_neigh_meter)
+                self.mat_weights[row, nearby_points] = 1 / (0.1 + dist_features) * np.exp(-dist_to_points / self.dist_neigh_meter)
                 # assert False
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
@@ -315,6 +319,17 @@ class LabelPropagation():
             print('Weights & metdata not saved to file')
 
         return None 
+    
+    def save_cos_sim(self):
+        tmp_cos = cosine_similarity(self.mat_labels, dense_output=False) 
+        tmp_cos.setdiag(np.zeros(tmp_cos.shape[0]))
+        new_cos = sp.csr_matrix((tmp_cos.shape[0], tmp_cos.shape[1]))
+        for i in tqdm(range(tmp_cos.shape[0])):
+            nz_ind_edge = self.mat_edges[i].nonzero()[1]
+            new_cos[i, nz_ind_edge] = tmp_cos[i, nz_ind_edge]    
+        km = int(self.dist_neigh_meter / 1000)
+        sp.save_npz(os.path.join(self.data_folder_sparse, f'/Users/t.vanderplas/data_offline/data_geolifeclef2024/geolifeclef-2024/sparse_format/mat_cos_labels_{km}km_20240516-2138.npz'), 
+                    new_cos)
 
     def fit(self):
         ## Create sparse label matrix:
@@ -363,6 +378,7 @@ class LabelPropagation():
                 curr_target_size = size_pos_labels_target[species_ind]
                 assert curr_target_size > 0 and curr_target_size < self.n_species, f'size_pos_labels_target is 0: {curr_target_size}'
                 thresholds_test[species_ind] = sorted_preds[-int(np.ceil(curr_target_size))]  ## ceil first to prevent rounding to 0 for target sizes < 1. 
+                thresholds_test[species_ind] = np.minimum(thresholds_test[species_ind], threshold_weighted_labels)
                 if thresholds_test[species_ind] == 0:  ## this shouldn't matter, because th==0 only if all preds are 0, but just in case to prevent future blow ups.
                     thresholds_test[species_ind] = 0.01
                 # else:

@@ -6,7 +6,7 @@ from tqdm import tqdm
 from loadpaths_glc import loadpaths
 import geopandas as gpd
 from shapely.geometry import Point
-import h3pandas
+from PIL import Image
 path_dict = loadpaths()
 
 def load_metadata(create_geo=False, add_h3=False, drop_po=False,
@@ -184,17 +184,29 @@ def get_path_sat_patch_per_survey(surveyId=1986, mode='train', data_type='PA'):
     folder_rgb = os.path.join(path_dict['data_folder'], f'{data_type}_{mode_name}_SatellitePatches_RGB/{data_type.lower()}_{mode}_patches_rgb')
     folder_nir = os.path.join(path_dict['data_folder'], f'{data_type}_{mode_name}_SatellitePatches_NIR/{data_type.lower()}_{mode}_patches_nir')
 
+    ## digits follow XXXXABCD
     surveyId_str = str(surveyId)
     if surveyId < 1000:
-        surveyId_str = surveyId_str.zfill(4)
-
-    ## digits follow XXXXABCD
-    digits_AB = surveyId_str[-4:-2]
+        assert surveyId >= 100, f'{surveyId} is below 100, double check how folder structure is created'
+        # surveyId_str = surveyId_str.zfill(4)
+        digits_AB = surveyId_str[0]
+    else:
+        digits_AB = surveyId_str[-4:-2]
     digits_CD = surveyId_str[-2:]
     path_rgb = os.path.join(folder_rgb, digits_CD, digits_AB, surveyId_str + '.jpeg')
     path_nir = os.path.join(folder_nir, digits_CD, digits_AB, surveyId_str + '.jpeg')
 
     return path_rgb, path_nir
+
+def load_sat_patch(surveyId=212, mode='train', data_type='PA'):
+    path_rgb, path_nir = get_path_sat_patch_per_survey(surveyId=surveyId, mode=mode, data_type=data_type)
+    assert os.path.exists(path_rgb), f'Path does not exist: {path_rgb}'
+    img_rgb = np.array(Image.open(path_rgb))
+    img_nir = np.array(Image.open(path_nir))
+    assert img_rgb.shape == (128, 128, 3), f'Image shape is {img_rgb.shape}'
+    assert img_nir.shape == (128, 128), f'Image shape is {img_nir.shape}'
+    img_comb = np.concatenate([img_rgb, img_nir[..., np.newaxis]], axis=-1)
+    return img_comb
 
 def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
                       drop_surveyId=True, val_or_test='val', path_inds_val=None,
