@@ -154,20 +154,24 @@ class LabelPropagation():
         self.create_graph()
 
     def load_data(self):
-        (df_train, df_test), (df_train_species, df_val_species) = dlu.create_full_pa_ds(
+        (df_train, df_test), (df_train_species, df_val_species), arr_expl_var = dlu.create_full_pa_ds(
             list_env_types=self.list_env_types, val_or_test=self.val_or_test, 
             path_inds_val=self.path_inds_val, drop_surveyId=False,
-            create_geo=True
+            create_geo=True, transform_pca=True if self.method_weights == 'pca_dist' else False
         )
         self.df_train = df_train
+        assert self.df_train.isna().sum().sum() == 0, 'NaN values found in df_train'
         self.df_train_species = df_train_species
         self.df_test = df_test
+        assert self.df_test.isna().sum().sum() == 0, 'NaN values found in df_test'
         self.df_val_species = df_val_species
         if self.val_or_test == 'val':
             assert len(df_val_species) > 0, 'No validation species data'
         elif self.val_or_test == 'test':
             assert df_val_species is None, 'Validation species data found'
-
+        if self.method_weights == 'pca_dist':
+            self.arr_expl_var = arr_expl_var
+            
     def create_graph(self):
         assert 'surveyId' in self.df_train.columns, 'surveyId not in df_train'
         if self.val_or_test == 'val':
@@ -267,11 +271,13 @@ class LabelPropagation():
             assert row == self.dict_surveys_val_to_ind[surveyId], 'Row mismatch'
             curr_sample = self.df_features_merged.loc[self.df_features_merged['surveyId'] == surveyId]
             point_loc = curr_sample.geometry.values[0]
-            current_lc = curr_sample.LandCover.values[0]
             circle = point_loc.buffer(self.dist_neigh_meter)
             nearby_points = self.df_features_merged.sindex.intersection(circle.bounds)
             nearby_points = np.setdiff1d(nearby_points, row)  ## remove self
+            if len(nearby_points) == 0:
+                continue
             if self.filter_lc_exact_match:
+                current_lc = curr_sample.LandCover.values[0]
                 nearby_points_lc_match = self.df_features_merged.iloc[nearby_points]
                 nearby_points_lc_match = nearby_points_lc_match[nearby_points_lc_match['LandCover'] == current_lc]
                 nearby_points = nearby_points_lc_match.index
@@ -295,7 +301,16 @@ class LabelPropagation():
                 sim_features = np.sum(sim_features * weight_features, axis=1)
                 # sim_features = np.sum(sim_features, axis=1)
                 self.mat_weights[row, nearby_points] = sim_features * np.exp(-dist_to_points / self.dist_neigh_meter)
-                # assert False
+            elif self.method_weights == 'pca_dist':
+                list_features = [c for c in self.df_features_merged.columns if c[:3] == 'PCA']
+                curr_features = curr_sample[list_features].values
+                nearby_features = self.df_features_merged.iloc[nearby_points][list_features].values
+                # weight_features = self.arr_expl_var
+                dist_features = np.abs(curr_features - nearby_features)
+                sim_features = 1 / (0.1 + dist_features)
+                # sim_features = np.sum(sim_features * weight_features, axis=1)
+                sim_features = np.sum(sim_features, axis=1)
+                self.mat_weights[row, nearby_points] = sim_features * np.exp(-dist_to_points / self.dist_neigh_meter)      
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
 
@@ -346,7 +361,8 @@ class LabelPropagation():
         ## Create sparse label matrix:
         array_diffs = []
         diff_threshold = 1
-
+        # print(self.mat_weights.shape, self.mat_labels.shape, self.n_train)
+        assert self.mat_weights.shape[0] == self.mat_labels.shape[0], f'Mismatch in mat_weights and mat_labels: {self.mat_weights.shape[0]} vs {self.mat_labels.shape[0]}'
         self.mat_labels_fit = self.mat_labels.copy()
         sum_weights = self.mat_weights.sum(axis=1)[self.n_train:]
         pbar = tqdm(range(self.n_iter))  # Initialize tqdm progress bar

@@ -7,6 +7,9 @@ from loadpaths_glc import loadpaths
 import geopandas as gpd
 from shapely.geometry import Point
 from PIL import Image
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
 path_dict = loadpaths()
 
 def load_metadata(create_geo=False, add_h3=False, drop_po=False,
@@ -157,7 +160,10 @@ def load_multiple_env_raster(mode='train', data_type='PA', list_surveyIds=None,
         print('WARNING: soil grids contain many nans')
     
     for i_env, env_type in enumerate(list_env_types):
-        df_raster = load_env_raster(env_type=env_type, mode=mode, data_type=data_type)
+        if env_type == 'landsat':
+            _, df_raster = load_landsat_timeseries(mode=mode, data_type=data_type)
+        else:
+            df_raster = load_env_raster(env_type=env_type, mode=mode, data_type=data_type)
         if i_env == 0:
             df_merged = df_raster
         else:
@@ -198,7 +204,7 @@ def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
                 assert n_nans == 35
                 print(f'Nans in elevation data: {n_nans}. Manually fixing now.')
 
-        ## Look up elevation using lon/lat (offline):
+        ## Look up elevation using lon/lat (offline): https://www.freemaptools.com/elevation-finder.htm
         dict_elevation_fill = {
             168459: 13,
             178182: 12,
@@ -277,7 +283,7 @@ def load_sat_patch(surveyId=212, mode='train', data_type='PA'):
 
 def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
                       drop_surveyId=True, val_or_test='val', path_inds_val=None,
-                      create_geo=False):
+                      create_geo=False, transform_pca=False, pca_threshold=0.9):
     '''If val_or_test is "val", then the validation set is created (incl species), otherwise the test set is created (with no species).'''
     dict_dfs, dict_dfs_species, _ = load_metadata(create_geo=create_geo, add_h3=False, path_inds_val=path_inds_val,
                                                   create_validation_set=True if val_or_test == 'val' else False)
@@ -285,6 +291,19 @@ def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
     ## Create train set:
     df_env_train = load_multiple_env_raster(mode='train', list_surveyIds=dict_dfs['df_train_pa']['surveyId'].unique(),
                                             list_env_types=list_env_types) 
+    if transform_pca:
+        scaler = StandardScaler()
+        assert df_env_train.columns[0] == 'surveyId', 'First column is not surveyId'
+        array_surveyid = df_env_train['surveyId'].values
+        tmp_vals = df_env_train.values[:, 1:]
+        tmp_vals = scaler.fit_transform(tmp_vals)
+        pca = PCA(n_components=pca_threshold)
+        tmp_vals = pca.fit_transform(tmp_vals)
+        tmp_dict = {**{'surveyId': array_surveyid}, **{f'PCA_{i}': tmp_vals[:, i] for i in range(tmp_vals.shape[1])}}
+        df_env_train = pd.DataFrame(tmp_dict)
+        array_expl_var = pca.explained_variance_ratio_
+    else:
+        array_expl_var = None
     df_train = pd.merge(dict_dfs['df_train_pa'], df_env_train, on='surveyId')
     df_train.dropna(inplace=True)
     df_train_species = dict_dfs_species['df_train_pa_species'][dict_dfs_species['df_train_pa_species']['surveyId'].isin(df_train['surveyId'])]
@@ -293,17 +312,30 @@ def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
     if val_or_test == 'val':
         df_env_test = load_multiple_env_raster(mode='train', list_surveyIds=dict_dfs['df_val_pa']['surveyId'].unique(),
                                             list_env_types=list_env_types)
+        if transform_pca:
+            tmp_vals = df_env_test.values[:, 1:]
+            tmp_vals = scaler.transform(tmp_vals)
+            tmp_vals = pca.transform(tmp_vals)
+            tmp_dict = {**{'surveyId': df_env_test['surveyId'].values}, **{f'PCA_{i}': tmp_vals[:, i] for i in range(tmp_vals.shape[1])}}
+            df_env_test = pd.DataFrame(tmp_dict)
         df_test = pd.merge(dict_dfs['df_val_pa'], df_env_test, on='surveyId')
         df_test.dropna(inplace=True)
         df_val_species = dict_dfs_species['df_val_pa_species'][dict_dfs_species['df_val_pa_species']['surveyId'].isin(df_test['surveyId'])]
     elif val_or_test == 'test':
         df_env_test = load_multiple_env_raster(mode='test', list_env_types=list_env_types)
+        if transform_pca:
+            tmp_vals = df_env_test.values[:, 1:]
+            tmp_vals = scaler.transform(tmp_vals)
+            tmp_vals = pca.transform(tmp_vals)
+            tmp_dict = {**{'surveyId': df_env_test['surveyId'].values}, **{f'PCA_{i}': tmp_vals[:, i] for i in range(tmp_vals.shape[1])}}
+            df_env_test = pd.DataFrame(tmp_dict)
         df_test = pd.merge(dict_dfs['df_test_pa'], df_env_test, on='surveyId')
         df_val_species = None
 
     assert df_train.isna().sum().sum() == 0, 'Nans in train data'
     assert df_test.isna().sum().sum() == 0, 'Nans in test data'
-    
+    assert df_train.columns.equals(df_test.columns), 'Columns differ between train and test'
+    assert df_train.shape[1] == df_test.shape[1], 'Number of columns differ between train and test'
     if drop_surveyId:
         df_train = df_train.drop('surveyId', axis=1)
         df_test = df_test.drop('surveyId', axis=1)
@@ -313,4 +345,4 @@ def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
 
     assert df_train.columns.equals(df_test.columns), 'Columns differ between train and test'
 
-    return (df_train, df_test), (df_train_species, df_val_species)
+    return (df_train, df_test), (df_train_species, df_val_species), array_expl_var
