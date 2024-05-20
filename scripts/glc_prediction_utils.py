@@ -187,7 +187,7 @@ class LabelPropagation():
             n_cols_zscored = 0
             # print('Z-scoring features')
             for c in self.df_features_merged.columns:
-                if c[:3] == 'Bio':
+                if c[:3] in ['Bio', 'Ele']:
                     self.df_features_merged[c] = (self.df_features_merged[c] - self.df_features_merged[c].mean()) / self.df_features_merged[c].std()
                     n_cols_zscored += 1
             print(f'Z-scored {n_cols_zscored} columns')
@@ -284,10 +284,17 @@ class LabelPropagation():
             elif self.method_weights == 'feature_dist':
                 # list_features = ['Bio12', 'Bio9', 'Bio10', 'Bio4', 'Bio14']
                 list_features = [c for c in self.df_features_merged.columns if c[:3] == 'Bio']
+                list_features = ['Elevation'] + list_features   
                 curr_features = curr_sample[list_features].values
                 nearby_features = self.df_features_merged.iloc[nearby_points][list_features].values
-                dist_features = np.linalg.norm(curr_features - nearby_features, axis=1, ord=1)
-                self.mat_weights[row, nearby_points] = 1 / (0.1 + dist_features) * np.exp(-dist_to_points / self.dist_neigh_meter)
+                # dist_features = np.linalg.norm(curr_features - nearby_features, axis=1, ord=1)
+                weight_features = np.array([17.,  5., 15.,  3., 11., 10., 20., 13.,  8.,  7., 12.,  9., 16.,
+                                            14.,  1., 19., 18.,  2.,  6.,  4.])
+                dist_features = np.abs(curr_features - nearby_features)
+                sim_features = 1 / (1 + dist_features)
+                sim_features = np.sum(sim_features * weight_features, axis=1)
+                # sim_features = np.sum(sim_features, axis=1)
+                self.mat_weights[row, nearby_points] = sim_features * np.exp(-dist_to_points / self.dist_neigh_meter)
                 # assert False
             else:
                 raise ValueError(f'Unknown method_weights: {self.method_weights}')
@@ -328,8 +335,12 @@ class LabelPropagation():
             nz_ind_edge = self.mat_edges[i].nonzero()[1]
             new_cos[i, nz_ind_edge] = tmp_cos[i, nz_ind_edge]    
         km = int(self.dist_neigh_meter / 1000)
-        sp.save_npz(os.path.join(self.data_folder_sparse, f'/Users/t.vanderplas/data_offline/data_geolifeclef2024/geolifeclef-2024/sparse_format/mat_cos_labels_{km}km_20240516-2138.npz'), 
+        self.mat_cos_label = new_cos
+        sp.save_npz(os.path.join(self.data_folder_sparse, f'mat_cos_labels_{km}km_20240516-2138.npz'), 
                     new_cos)
+
+    def load_cos_sim(self, km=30):
+        self.mat_cos_label = sp.load_npz(os.path.join(self.data_folder_sparse, f'mat_cos_labels_{km}km_20240516-2138.npz'))
 
     def fit(self):
         ## Create sparse label matrix:

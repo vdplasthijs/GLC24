@@ -134,7 +134,20 @@ def load_landsat_timeseries(mode='train', data_type='PA'):
     path_bands = {band: os.path.join(path_folder, f'GLC24-{data_type}-{mode}-landsat_time_series-{band}.csv') for band in names_bands}
 
     dict_dfs = {band: pd.read_csv(path_bands[band]) for band in names_bands}
-    return dict_dfs
+
+    ## merge all dfs, drop nan cols:
+    for it, (key, val_df) in enumerate(dict_dfs.items()):
+        col_inds_nan = np.where(val_df.isna().sum(0) > 0)[0]
+        assert col_inds_nan[0] == 73
+        val_df = val_df.drop(columns=val_df.columns[col_inds_nan])
+        ## rename cols:
+        val_df = val_df.rename(columns={c: f'{c}_{key}' for c in val_df.columns if c != 'surveyId'})
+        if it == 0:
+            df_all = val_df
+        else:
+            df_all = df_all.merge(val_df, on='surveyId', how='outer')
+    assert df_all.isna().sum().sum() == 0
+    return dict_dfs, df_all
 
 def load_multiple_env_raster(mode='train', data_type='PA', list_surveyIds=None,
                              list_env_types=['elevation', 'landcover', 'climate_av']):
@@ -173,6 +186,60 @@ def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
 
     assert os.path.exists(path_raster), f'Path does not exist: {path_raster}'
     df_raster = pd.read_csv(path_raster)
+
+    if env_type == 'elevation':
+        n_nans = df_raster.isna().sum().sum()
+        if data_type == 'PO':
+            assert n_nans == 0, 'Nans in elevation data'
+        else:
+            if mode == 'test':
+                assert n_nans == 0, 'Nans in elevation data'
+            elif mode == 'train':
+                assert n_nans == 35
+                print(f'Nans in elevation data: {n_nans}. Manually fixing now.')
+
+        ## Look up elevation using lon/lat (offline):
+        dict_elevation_fill = {
+            168459: 13,
+            178182: 12,
+            249903: 13,
+            509739: 408,
+            634794: 13,
+            885566: 13,
+            992568: 0,
+            1123670: 56,
+            1128141: 55,
+            1154317: 13,
+            1176780: 103,
+            1265195: 103,
+            1396637: 103,
+            1504221: 323,
+            1658226: 13,
+            1718915: 13,
+            1738571: 13,
+            1934450: 13,
+            1967118: 13,
+            2006152: 41,
+            2007673: 12,
+            2211670: 13,
+            2329898: 13,
+            2367983: 13,
+            2499157: 13,
+            2616656: 13,
+            2619214: 13,
+            2651568: 13,
+            2760392: 13,
+            2775439: 90,
+            2863281: 13,
+            3026478: 13,
+            3193990: 13,
+            3563432: 13,
+            3705072: 13
+        }
+        for surveyId, elevation in dict_elevation_fill.items():
+            df_raster.loc[df_raster['surveyId'] == surveyId, 'Elevation'] = elevation
+        assert df_raster.isna().sum().sum() == 0, 'Nans in elevation data'
+        print('Nans in elevation data fixed')
     return df_raster
 
 def get_path_sat_patch_per_survey(surveyId=1986, mode='train', data_type='PA'):
