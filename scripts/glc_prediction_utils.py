@@ -14,6 +14,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import data_loading_utils as dlu
 from loadpaths_glc import loadpaths
 path_dict = loadpaths()
+GLC_YEAR = '24'
 
 def convert_dict_pred_to_csv(dict_pred, save=True, custom_name=''):
     assert len(dict_pred) == 4716, f'Not expected len for GLC 2024: {len(dict_pred)}'
@@ -31,7 +32,7 @@ def convert_dict_pred_to_csv(dict_pred, save=True, custom_name=''):
     df['predictions'] = df['predictions'].apply(lambda x: ' '.join(map(str, x)).lstrip('[ ').rstrip(' ]').replace("\n", ""))
 
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M')
-    path_save = os.path.join(path_dict['predictions_folder'], f'{timestamp}_GLC24_vdplasthijs_predictions-{custom_name}.csv')
+    path_save = os.path.join(path_dict['predictions_folder'], f'{timestamp}_GLC{GLC_YEAR}_vdplasthijs_predictions-{custom_name}.csv')
     if save:
         df.to_csv(path_save, index=False)
         print(f'Saved predictions to: {path_save}')

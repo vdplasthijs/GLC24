@@ -11,12 +11,16 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 path_dict = loadpaths()
+GLC_YEAR = '24'
 
 def load_metadata(create_geo=False, add_h3=False, drop_po=False,
                   drop_duplicates=True, create_validation_set=False, 
                   path_inds_val=None):
     if path_inds_val is None:
-        path_inds_val = '../content/val_inds/inds_val_pa-20240416-1454.npy'
+        if GLC_YEAR == '24':
+            path_inds_val = '../content/val_inds/inds_val_pa-20240416-1454.npy'
+        else:
+            assert False, 'Path to validation indices not found'
     if add_h3 is not False:
         assert type(add_h3) == int, add_h3
         bool_add_h3 = True
@@ -25,9 +29,9 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False,
     if create_geo and drop_po is False:
         drop_po = True
         print('Dropped PO data because takes ages with geometry')
-    df_train_pa = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_PA_metadata_train.csv'))
-    df_train_po = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_P0_metadata_train.csv'))
-    df_test_pa = pd.read_csv(os.path.join(path_dict['data_folder'], 'GLC24_PA_metadata_test.csv'))
+    df_train_pa = pd.read_csv(os.path.join(path_dict['data_folder'], f'GLC{GLC_YEAR}_PA_metadata_train.csv'))
+    df_train_po = pd.read_csv(os.path.join(path_dict['data_folder'], f'GLC{GLC_YEAR}_P0_metadata_train.csv'))
+    df_test_pa = pd.read_csv(os.path.join(path_dict['data_folder'], f'GLC{GLC_YEAR}_PA_metadata_test.csv'))
 
     cols_drop = ['taxonRank', 'geoUncertaintyInM', 'date', 'areaInM2', 'publisher',
                  'month', 'day', 'region', 'dayOfYear', 'country']  ## drop all non informative and/or non omnipresent columns
@@ -134,7 +138,7 @@ def load_landsat_timeseries(mode='train', data_type='PA'):
 
     path_folder = os.path.join(path_dict['data_folder'], f'{data_type}-{mode}-landsat_time_series')
     names_bands = ['blue', 'green', 'nir', 'red', 'swir1', 'swir2']
-    path_bands = {band: os.path.join(path_folder, f'GLC24-{data_type}-{mode}-landsat_time_series-{band}.csv') for band in names_bands}
+    path_bands = {band: os.path.join(path_folder, f'GLC{GLC_YEAR}-{data_type}-{mode}-landsat_time_series-{band}.csv') for band in names_bands}
 
     dict_dfs = {band: pd.read_csv(path_bands[band]) for band in names_bands}
 
@@ -181,14 +185,14 @@ def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
 
     base_path = os.path.join(path_dict['data_folder'], 'EnvironmentalRasters/EnvironmentalRasters/')
     if env_type == 'human_footprint':
-        path_raster = os.path.join(base_path, f'Human Footprint/GLC24-{data_type}-{mode}-human_footprint.csv')
+        path_raster = os.path.join(base_path, f'Human Footprint/GLC{GLC_YEAR}-{data_type}-{mode}-human_footprint.csv')
     elif env_type == 'climate_av':
-        path_raster = os.path.join(base_path, f'Climate/Average 1981-2010/GLC24-{data_type}-{mode}-bioclimatic.csv')
+        path_raster = os.path.join(base_path, f'Climate/Average 1981-2010/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic.csv')
     elif env_type == 'climate_monthly':
-        path_raster = os.path.join(base_path, f'Climate/Monthly/GLC24-{data_type}-{mode}-bioclimatic_monthly.csv')
+        path_raster = os.path.join(base_path, f'Climate/Monthly/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic_monthly.csv')
     else:
         folder_name = env_type[0].upper() + env_type[1:]
-        path_raster = os.path.join(base_path, f'{folder_name}/GLC24-{data_type}-{mode}-{env_type}.csv')
+        path_raster = os.path.join(base_path, f'{folder_name}/GLC{GLC_YEAR}-{data_type}-{mode}-{env_type}.csv')
 
     assert os.path.exists(path_raster), f'Path does not exist: {path_raster}'
     df_raster = pd.read_csv(path_raster)

@@ -11,6 +11,8 @@ import json
 import sys
 import getpass
 from pathlib import Path
+GLC_YEAR = '24'
+
 
 def loadpaths(username=None):
     '''Function that loads data paths from json file based on computer username'''

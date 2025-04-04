@@ -1,7 +1,9 @@
 {
   "thijs": 
     {"paths": {
-      "home": "/home/thijs/"
+      "home": "/home/thijs/",
+      "repo": "/home/thijs/repos/GLC24/",
+      "data_folder": "/home/thijs/data/GLC25/"
               }
     },
   "t.vanderplas": 
