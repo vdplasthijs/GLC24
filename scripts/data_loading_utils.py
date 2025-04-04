@@ -11,16 +11,11 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 path_dict = loadpaths()
-GLC_YEAR = '24'
+GLC_YEAR = '25'
 
 def load_metadata(create_geo=False, add_h3=False, drop_po=False,
                   drop_duplicates=True, create_validation_set=False, 
                   path_inds_val=None):
-    if path_inds_val is None:
-        if GLC_YEAR == '24':
-            path_inds_val = '../content/val_inds/inds_val_pa-20240416-1454.npy'
-        else:
-            assert False, 'Path to validation indices not found'
     if add_h3 is not False:
         assert type(add_h3) == int, add_h3
         bool_add_h3 = True
@@ -85,15 +80,19 @@ def load_metadata(create_geo=False, add_h3=False, drop_po=False,
     
     if create_validation_set:
         if path_inds_val is None:
-            fraction_val_pa = 0.1
-            n_val_pa = int(fraction_val_pa * len(dict_dfs['df_train_pa']))
-            inds_val_pa = np.random.choice(dict_dfs['df_train_pa'].index, n_val_pa, replace=False)
-            timestamp = pd.Timestamp.now().strftime('%Y%m%d-%H%M')
-            np.save(os.path.join('../content/val_inds/', f'inds_val_pa-{timestamp}.npy'), inds_val_pa)
-        else:
-            assert os.path.exists(path_inds_val), f'Path does not exist: {path_inds_val}'
-            assert path_inds_val.endswith('.npy'), path_inds_val
-            inds_val_pa = np.load(path_inds_val)
+            if GLC_YEAR == '24':
+                path_inds_val = '../content/val_inds/inds_val_pa-20240416-1454.npy'
+            else:
+                print('Creating new validation set')
+                fraction_val_pa = 0.1
+                n_val_pa = int(fraction_val_pa * len(dict_dfs['df_train_pa']))
+                inds_val_pa = np.random.choice(dict_dfs['df_train_pa'].index, n_val_pa, replace=False)
+                timestamp = pd.Timestamp.now().strftime('%Y%m%d-%H%M')
+                path_inds_val = os.path.join('../content/val_inds/', f'inds_val_pa-{timestamp}.npy')
+                np.save(path_inds_val, inds_val_pa)
+        assert os.path.exists(path_inds_val), f'Path does not exist: {path_inds_val}'
+        assert path_inds_val.endswith('.npy'), path_inds_val
+        inds_val_pa = np.load(path_inds_val)
         dict_dfs['df_val_pa'] = dict_dfs['df_train_pa'].loc[inds_val_pa].sort_values('surveyId')   
         dict_dfs['df_train_pa'] = dict_dfs['df_train_pa'].drop(inds_val_pa)
 
@@ -136,9 +135,12 @@ def load_landsat_timeseries(mode='train', data_type='PA'):
     assert mode in ['train', 'test'], mode 
     assert data_type in ['PA'], data_type
 
-    path_folder = os.path.join(path_dict['data_folder'], f'{data_type}-{mode}-landsat_time_series')
+    if GLC_YEAR == '24':
+        path_folder = os.path.join(path_dict['data_folder'], f'{data_type}-{mode}-landsat_time_series')
+    elif GLC_YEAR == '25':
+        path_folder = os.path.join(path_dict['data_folder'], 'SateliteTimeSeries-Landsat/values/')
     names_bands = ['blue', 'green', 'nir', 'red', 'swir1', 'swir2']
-    path_bands = {band: os.path.join(path_folder, f'GLC{GLC_YEAR}-{data_type}-{mode}-landsat_time_series-{band}.csv') for band in names_bands}
+    path_bands = {band: os.path.join(path_folder, f'{data_type}-{mode}/GLC{GLC_YEAR}-{data_type}-{mode}-landsat_time_series-{band}.csv') for band in names_bands}
 
     dict_dfs = {band: pd.read_csv(path_bands[band]) for band in names_bands}
 
@@ -183,13 +185,24 @@ def load_env_raster(env_type='elevation', mode='train', data_type='PA'):
     assert data_type in ['PA'], data_type
     assert env_type in ['elevation', 'human_footprint', 'landcover', 'soilgrids', 'climate_av', 'climate_monthly']
 
-    base_path = os.path.join(path_dict['data_folder'], 'EnvironmentalRasters/EnvironmentalRasters/')
+    if GLC_YEAR == '24':
+        base_path = os.path.join(path_dict['data_folder'], 'EnvironmentalRasters/EnvironmentalRasters/')
+    elif GLC_YEAR == '25':
+        base_path = os.path.join(path_dict['data_folder'], 'EnvironmentalValues/')
     if env_type == 'human_footprint':
         path_raster = os.path.join(base_path, f'Human Footprint/GLC{GLC_YEAR}-{data_type}-{mode}-human_footprint.csv')
     elif env_type == 'climate_av':
-        path_raster = os.path.join(base_path, f'Climate/Average 1981-2010/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic.csv')
+        if GLC_YEAR == '24':
+            path_raster = os.path.join(base_path, f'Climate/Average 1981-2010/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic.csv')
+        elif GLC_YEAR == '25':
+            path_raster = os.path.join(base_path, f'ClimateAverage_1981-2010/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic.csv')
     elif env_type == 'climate_monthly':
         path_raster = os.path.join(base_path, f'Climate/Monthly/GLC{GLC_YEAR}-{data_type}-{mode}-bioclimatic_monthly.csv')
+    elif env_type == 'landcover':
+        if GLC_YEAR == '24':
+            path_raster = os.path.join(base_path, f'Landcover/GLC{GLC_YEAR}-{data_type}-{mode}-landcover.csv')
+        elif GLC_YEAR == '25':
+            path_raster = os.path.join(base_path, f'LandCover/GLC{GLC_YEAR}-{data_type}-{mode}-landcover.csv')
     else:
         folder_name = env_type[0].upper() + env_type[1:]
         path_raster = os.path.join(base_path, f'{folder_name}/GLC{GLC_YEAR}-{data_type}-{mode}-{env_type}.csv')
@@ -289,6 +302,7 @@ def create_full_pa_ds(list_env_types=['elevation', 'landcover', 'climate_av'],
                       drop_surveyId=True, val_or_test='val', path_inds_val=None,
                       create_geo=False, transform_pca=False, pca_threshold=0.9):
     '''If val_or_test is "val", then the validation set is created (incl species), otherwise the test set is created (with no species).'''
+    assert val_or_test in ['val', 'test'], val_or_test
     dict_dfs, dict_dfs_species, _ = load_metadata(create_geo=create_geo, add_h3=False, path_inds_val=path_inds_val,
                                                   create_validation_set=True if val_or_test == 'val' else False)
     

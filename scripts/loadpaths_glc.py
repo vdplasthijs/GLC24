@@ -11,7 +11,7 @@ import json
 import sys
 import getpass
 from pathlib import Path
-GLC_YEAR = '24'
+GLC_YEAR = '25'
 
 
 def loadpaths(username=None):

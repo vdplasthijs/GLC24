@@ -14,7 +14,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import data_loading_utils as dlu
 from loadpaths_glc import loadpaths
 path_dict = loadpaths()
-GLC_YEAR = '24'
+GLC_YEAR = '25'
 
 def convert_dict_pred_to_csv(dict_pred, save=True, custom_name=''):
     assert len(dict_pred) == 4716, f'Not expected len for GLC 2024: {len(dict_pred)}'
