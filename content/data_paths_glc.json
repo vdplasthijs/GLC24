@@ -3,7 +3,8 @@
     {"paths": {
       "home": "/home/thijs/",
       "repo": "/home/thijs/repos/GLC24/",
-      "data_folder": "/home/thijs/data/GLC25/"
+      "data_folder": "/home/thijs/data/GLC25/",
+      "predictions_folder": "/home/thijs/data/GLC25/predictions/"
               }
     },
   "t.vanderplas": 

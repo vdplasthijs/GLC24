@@ -52,6 +52,15 @@ def predict_using_buffer(dict_dfs, dict_dfs_species, buffer_deg=0.2, save_pred=F
 
     df_train = pd.merge(dict_dfs['df_train_pa'], df_env_train, on='surveyId')
     df_train_species = dict_dfs_species['df_train_pa_species']
+
+    if len(df_env_test) != len(dict_dfs[name_df]['surveyId']):
+        complete_surveys = set(df_env_test['surveyId']).intersection(set(dict_dfs[name_df]['surveyId']))
+        print(f'Warning: {len(dict_dfs[name_df]["surveyId"])} surveys in {name_df} but only {len(complete_surveys)} in env')
+        assert len(complete_surveys) > 0, 'No common surveys between test and env'
+    
+        df_env_test = df_env_test[df_env_test['surveyId'].isin(complete_surveys)]
+        dict_dfs[name_df] = dict_dfs[name_df][dict_dfs[name_df]['surveyId'].isin(complete_surveys)]
+
     assert np.all(df_env_test['surveyId'].values == dict_dfs[name_df]['surveyId'].values), 'SurveyId mismatch between test and env'
 
     if method == 'lc-specific':
